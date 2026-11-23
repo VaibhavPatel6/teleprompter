@@ -727,6 +727,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+// Diagnostic: print permission state without prompting, then quit.
+//   open -W --stdout /dev/stdout /Applications/Teleprompter.app --args --permission-status
+if CommandLine.arguments.contains("--permission-status") {
+    print(SpeechListener.permissionSummary())
+    exit(0)
+}
+
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = AppDelegate()

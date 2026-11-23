@@ -26,7 +26,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
-codesign --force --sign - "$APP" >/dev/null
+# Ad-hoc signing normally identifies the app by a hash of this exact build,
+# so macOS forgets Microphone/Speech permission after every rebuild. A
+# designated requirement based on the bundle identifier keeps the identity
+# stable across rebuilds, so permission is granted once.
+codesign --force --sign - --requirements '=designated => identifier "local.teleprompter"' "$APP" >/dev/null
 
 # Install into /Applications, replacing the old copy (quit it first if running).
 osascript -e 'quit app "Teleprompter"' 2>/dev/null || true

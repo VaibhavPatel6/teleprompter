@@ -27,6 +27,27 @@ final class SpeechListener {
     private var resultsTask: Task<Void, Never>?
     private(set) var isListening = false
 
+    /// Current Microphone and Speech Recognition permission, without asking.
+    nonisolated static func permissionSummary() -> String {
+        let mic: String
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: mic = "authorized"
+        case .denied: mic = "denied"
+        case .restricted: mic = "restricted"
+        case .notDetermined: mic = "notDetermined"
+        @unknown default: mic = "unknown"
+        }
+        let speech: String
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized: speech = "authorized"
+        case .denied: speech = "denied"
+        case .restricted: speech = "restricted"
+        case .notDetermined: speech = "notDetermined"
+        @unknown default: speech = "unknown"
+        }
+        return "microphone=\(mic) speech=\(speech)"
+    }
+
     func start() async throws {
         guard !isListening else { return }
         guard await AVCaptureDevice.requestAccess(for: .audio) else { throw ListenError.micDenied }
