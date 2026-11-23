@@ -11,6 +11,9 @@ top of the screen, close to the webcam, and keeps the line you're on pinned at t
   while you ad-lib and catches up if you skip a sentence. Audio never leaves your Mac.
 - **Timed mode.** Scrolls at a fixed pace (60–260 words per minute), pausing
   briefly at commas, sentence ends and paragraph breaks.
+- **Two reading styles.** *Top to bottom* wraps the script into lines and keeps
+  your line pinned at the top. *Side to side* shows one line that moves right to
+  left like a news ticker, with the current word a third of the way across.
 - **See-through mode.** Clears the white background so you can see the window
   behind it, while the script text stays solid.
 - **Global hotkeys** that work while another app (like your browser) is in front.

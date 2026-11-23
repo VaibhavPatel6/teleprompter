@@ -24,6 +24,12 @@ enum Settings {
         get { d.bool(forKey: "seeThrough") }
         set { d.set(newValue, forKey: "seeThrough") }
     }
+    /// Reading style: false = top to bottom (wrapped lines), true = side to
+    /// side (one line that moves right to left, like a news ticker).
+    static var sideToSide: Bool {
+        get { d.bool(forKey: "sideToSide") }
+        set { d.set(newValue, forKey: "sideToSide") }
+    }
     static var fontSize: CGFloat {
         get { CGFloat(d.object(forKey: "fontSize") as? Double ?? 32) }
         set { d.set(Double(newValue), forKey: "fontSize") }
@@ -74,7 +80,11 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
     private var countdownRemaining: Double = 0
     private var lastTick = CACurrentMediaTime()
     private var timer: Timer?
-    private var scrollY: CGFloat = 0
+    private var scrollPos = NSPoint.zero
+    private var insetsSize = NSSize.zero   // visible size the insets were computed for
+    private let styleMenu = NSPopUpButton(frame: .zero, pullsDown: false)
+    /// Where the current word sits in side-to-side mode (fraction of the width).
+    private let tickerAnchor: CGFloat = 0.33
 
     private let ahead = NSColor(white: 0.72, alpha: 1)
     private let read = NSColor.black
@@ -199,9 +209,18 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
         let fasterButton = button("plus", "Faster (⌃⌥↑)", #selector(faster))
         timedOnlyViews = [slowerButton, wpmLabel, fasterButton]
 
+        styleMenu.addItems(withTitles: ["Top to bottom", "Side to side"])
+        styleMenu.controlSize = .small
+        styleMenu.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        styleMenu.selectItem(at: Settings.sideToSide ? 1 : 0)
+        styleMenu.toolTip = "Reading style"
+        styleMenu.target = self
+        styleMenu.action = #selector(styleChanged)
+
         for v in [
             editButton,
             modeControl,
+            styleMenu,
             button("arrow.counterclockwise", "Restart (⌃⌥R)", #selector(restart)),
             button("backward.end", "Back one sentence (⌃⌥←)", #selector(backSentence)),
             playButton,
@@ -329,31 +348,69 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
 
     // MARK: Modes
 
+    private var isTicker: Bool { Settings.sideToSide && !isEditing }
+
     private var paragraphStyle: NSParagraphStyle {
         let p = NSMutableParagraphStyle()
-        p.alignment = .center
-        p.lineSpacing = Settings.fontSize * 0.25
+        if isTicker {
+            p.alignment = .left           // one endless line; centering would be meaningless
+        } else {
+            p.alignment = .center
+            p.lineSpacing = Settings.fontSize * 0.25
+        }
         return p
     }
 
+    /// Side to side shows the script on one line, so line breaks become
+    /// spaces. Same length in UTF-16, so word ranges still line up.
+    private func displayText(_ script: String) -> String {
+        guard isTicker else { return script }
+        let breaks: Set<UInt16> = [0x0A, 0x0B, 0x0C, 0x0D, 0x85, 0x2028, 0x2029]
+        return String(decoding: script.utf16.map { breaks.contains($0) ? 0x20 : $0 }, as: UTF16.self)
+    }
+
+    /// Wrap lines to the window (top to bottom, and edit mode) or lay the
+    /// script out on a single unbounded line (side to side).
+    private func applyLayout() {
+        guard let container = textView.textContainer else { return }
+        let huge = CGFloat.greatestFiniteMagnitude
+        if isTicker {
+            textView.isHorizontallyResizable = true
+            textView.autoresizingMask = []
+            textView.maxSize = NSSize(width: huge, height: huge)
+            container.widthTracksTextView = false
+            container.containerSize = NSSize(width: huge, height: huge)
+        } else {
+            textView.isHorizontallyResizable = false
+            textView.autoresizingMask = [.width]
+            container.containerSize = NSSize(width: scrollView.contentSize.width, height: huge)
+            container.widthTracksTextView = true
+            textView.setFrameSize(NSSize(width: scrollView.contentSize.width, height: textView.frame.height))
+        }
+    }
+
     private func enterReadMode(resetPosition: Bool) {
+        let wasEditing = isEditing
         isEditing = false
-        let script = textView.string.isEmpty && resetPosition ? Settings.script : textView.string
+        // The text view holds the flattened one-line text in side-to-side
+        // mode, so only trust it as the script when leaving edit mode.
+        let script = wasEditing ? textView.string : Settings.script
         if resetPosition || script != Settings.script || pacer.words.isEmpty {
             Settings.script = script
             loadScript(script)
         }
         textView.isEditable = false
         textView.isSelectable = false
-        textView.textStorage?.setAttributedString(NSAttributedString(string: script, attributes: [
+        applyLayout()
+        textView.textStorage?.setAttributedString(NSAttributedString(string: displayText(script), attributes: [
             .font: NSFont.systemFont(ofSize: Settings.fontSize, weight: .medium),
             .foregroundColor: ahead,
             .paragraphStyle: paragraphStyle,
         ]))
         paintedCount = 0
         paintProgress()
-        updateBottomInset()
-        scrollY = targetScrollY()
+        updateInsets()
+        scrollPos = targetScroll()
         applyScroll()
         updateLabels()
         setControlsVisible(false)
@@ -363,13 +420,14 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
     private func enterEditMode() {
         pause()
         isEditing = true
-        textView.textStorage?.setAttributes([
+        applyLayout()
+        textView.textStorage?.setAttributedString(NSAttributedString(string: Settings.script, attributes: [
             .font: NSFont.systemFont(ofSize: 16),
             .foregroundColor: NSColor.black,
-        ], range: NSRange(location: 0, length: (textView.string as NSString).length))
+        ]))
         textView.isEditable = true
         textView.isSelectable = true
-        scrollView.contentInsets = NSEdgeInsetsZero
+        updateInsets()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(textView)
@@ -431,6 +489,14 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
             voiceShown = follower.preview(heard: words)
         }
         if voiceShown >= pacer.words.count { pause() }
+    }
+
+    @objc func styleChanged() {
+        Settings.sideToSide = styleMenu.indexOfSelectedItem == 1
+        if !isEditing {
+            enterReadMode(resetPosition: false)
+            setControlsVisible(true)      // the pointer is still on the strip
+        }
     }
 
     @objc func modeChanged() {
@@ -513,7 +579,7 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
                 .font: NSFont.systemFont(ofSize: Settings.fontSize, weight: .medium),
                 .paragraphStyle: paragraphStyle,
             ], range: full)
-            updateBottomInset()
+            updateInsets()
         }
     }
 
@@ -557,26 +623,52 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
         paintProgress()
     }
 
-    /// Scroll position that puts the current word's line at the top.
-    private func targetScrollY() -> CGFloat {
-        guard !pacer.words.isEmpty, let lm = textView.layoutManager, let tc = textView.textContainer else { return 0 }
+    /// Scroll position for the current word: its line at the top (top to
+    /// bottom), or the word a third of the way across (side to side).
+    private func targetScroll() -> NSPoint {
+        guard !pacer.words.isEmpty, let lm = textView.layoutManager, let tc = textView.textContainer else { return .zero }
         let glyphs = lm.glyphRange(forCharacterRange: pacer.words[pinIndex].range, actualCharacterRange: nil)
         let rect = lm.boundingRect(forGlyphRange: glyphs, in: tc)
-        return max(0, rect.minY + textView.textContainerOrigin.y - 6)
+        let origin = textView.textContainerOrigin
+        if isTicker {
+            return NSPoint(x: max(0, rect.minX + origin.x - scrollView.contentSize.width * tickerAnchor), y: 0)
+        }
+        return NSPoint(x: 0, y: max(0, rect.minY + origin.y - 6))
     }
 
-    /// Room below the text so the last line can still reach the top.
-    private func updateBottomInset() {
-        scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: max(0, scrollView.bounds.height - Settings.fontSize * 2), right: 0)
+    /// Padding around the text for the current layout.
+    /// - Top to bottom: room below the text so the last line can reach the top.
+    /// - Side to side: a window's width of room on each end so the first and
+    ///   last words can reach the anchor, and the line centered vertically.
+    private func updateInsets() {
+        let visible = scrollView.contentSize
+        insetsSize = visible
+        if isTicker {
+            let font = NSFont.systemFont(ofSize: Settings.fontSize, weight: .medium)
+            let lineHeight = textView.layoutManager?.defaultLineHeight(for: font) ?? Settings.fontSize * 1.25
+            textView.textContainerInset = NSSize(width: visible.width, height: max(4, (visible.height - lineHeight) / 2))
+            scrollView.contentInsets = NSEdgeInsetsZero
+            if let lm = textView.layoutManager, let tc = textView.textContainer { lm.ensureLayout(for: tc) }
+            textView.sizeToFit()
+        } else {
+            textView.textContainerInset = NSSize(width: 24, height: 12)
+            scrollView.contentInsets = isEditing
+                ? NSEdgeInsetsZero
+                : NSEdgeInsets(top: 0, left: 0, bottom: max(0, visible.height - Settings.fontSize * 2), right: 0)
+        }
     }
 
     private func applyScroll() {
-        scrollView.contentView.scroll(to: NSPoint(x: 0, y: scrollY))
+        scrollView.contentView.scroll(to: scrollPos)
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
-    func windowDidResize(_ notification: Notification) {
-        if !isEditing { updateBottomInset() }
+    /// Insets depend on the visible size, which is zero until the window is
+    /// first laid out and changes on resize, so recompute when it changes.
+    private func refreshInsetsIfResized() {
+        guard !isEditing, scrollView.contentSize != insetsSize else { return }
+        if isTicker { applyLayout() }
+        updateInsets()
     }
 
     private func tick() {
@@ -596,10 +688,13 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
             }
         }
         if spokenCount != paintedCount { paintProgress() }
+        refreshInsetsIfResized()
 
-        let target = targetScrollY()
-        if abs(target - scrollY) > 0.5 {
-            scrollY += (target - scrollY) * CGFloat(min(1, dt * 5))
+        let target = targetScroll()
+        if abs(target.x - scrollPos.x) > 0.5 || abs(target.y - scrollPos.y) > 0.5 {
+            let k = CGFloat(min(1, dt * 5))
+            scrollPos.x += (target.x - scrollPos.x) * k
+            scrollPos.y += (target.y - scrollPos.y) * k
             applyScroll()
         }
     }
