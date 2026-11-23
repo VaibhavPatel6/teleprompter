@@ -18,6 +18,12 @@ enum Settings {
         get { d.object(forKey: "voiceMode") as? Bool ?? true }
         set { d.set(newValue, forKey: "voiceMode") }
     }
+    /// See-through: the white background clears so you can see behind the
+    /// window, while the script text stays solid.
+    static var seeThrough: Bool {
+        get { d.bool(forKey: "seeThrough") }
+        set { d.set(newValue, forKey: "seeThrough") }
+    }
     static var fontSize: CGFloat {
         get { CGFloat(d.object(forKey: "fontSize") as? Double ?? 32) }
         set { d.set(Double(newValue), forKey: "fontSize") }
@@ -55,6 +61,8 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
     private let listeningDot = NSView()
     private let statusLabel = NSTextField(labelWithString: "")
     private var timedOnlyViews: [NSView] = []
+    private let eyeButton = NSButton()
+    private var statusItem: NSStatusItem?
 
     private var pacer: Pacer
     private var follower: VoiceFollower
@@ -84,6 +92,7 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
         configureControls()
         configureCountdown()
         configureListeningIndicator()
+        configureSeeThroughControls()
         listener.onWords = { [weak self] words, isFinal in self?.heard(words, isFinal: isFinal) }
         listener.onStatus = { [weak self] message in self?.statusLabel.stringValue = message ?? "" }
         enterReadMode(resetPosition: true)
@@ -265,6 +274,52 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
         ])
     }
 
+    /// Eye button in the window's title bar, plus an icon in the menu bar.
+    private func configureSeeThroughControls() {
+        eyeButton.isBordered = false
+        eyeButton.target = self
+        eyeButton.action = #selector(toggleSeeThrough)
+        eyeButton.frame = NSRect(x: 2, y: 1, width: 24, height: 20)
+        let holder = NSView(frame: NSRect(x: 0, y: 0, width: 32, height: 22))
+        holder.addSubview(eyeButton)
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.view = holder
+        accessory.layoutAttribute = .trailing
+        panel.addTitlebarAccessoryViewController(accessory)
+
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.image = NSImage(systemSymbolName: "text.viewfinder", accessibilityDescription: "Teleprompter see-through")
+        item.button?.target = self
+        item.button?.action = #selector(toggleSeeThrough)
+        statusItem = item
+    }
+
+    @objc func toggleSeeThrough() {
+        Settings.seeThrough.toggle()
+        applySeeThrough()
+    }
+
+    /// Clear the white background (never the text) when see-through is on.
+    /// Edit mode always stays solid so typing is readable.
+    private func applySeeThrough() {
+        let on = Settings.seeThrough
+        let clear = on && !isEditing
+        panel.isOpaque = !clear
+        panel.hasShadow = !clear
+        panel.backgroundColor = clear ? .clear : .white
+        panel.contentView?.layer?.backgroundColor = (clear ? NSColor(white: 1, alpha: 0.12) : NSColor.white).cgColor
+        scrollView.drawsBackground = !clear
+        textView.drawsBackground = !clear
+        panel.invalidateShadow()
+
+        let tip = on ? "Make solid (⌃⌥T)" : "See-through (⌃⌥T)"
+        eyeButton.image = NSImage(systemSymbolName: on ? "eye.fill" : "eye", accessibilityDescription: tip)
+        eyeButton.contentTintColor = on ? .controlAccentColor : .darkGray
+        eyeButton.toolTip = tip
+        statusItem?.button?.contentTintColor = on ? .controlAccentColor : nil
+        statusItem?.button?.toolTip = tip
+    }
+
     private func setControlsVisible(_ visible: Bool) {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.2
@@ -302,6 +357,7 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
         applyScroll()
         updateLabels()
         setControlsVisible(false)
+        applySeeThrough()
     }
 
     private func enterEditMode() {
@@ -319,6 +375,7 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
         panel.makeFirstResponder(textView)
         updateLabels()
         setControlsVisible(true)
+        applySeeThrough()
     }
 
     func textDidChange(_ notification: Notification) {
@@ -567,6 +624,7 @@ final class Prompter: NSObject, NSWindowDelegate, NSTextViewDelegate {
         case kVK_LeftArrow: backSentence()
         case kVK_RightArrow: forwardSentence()
         case kVK_ANSI_R: restart()
+        case kVK_ANSI_T: toggleSeeThrough()
         default: return false
         }
         return true
@@ -631,6 +689,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKeys.register(kVK_LeftArrow) { [weak self] in self?.prompter.backSentence() }
         hotKeys.register(kVK_RightArrow) { [weak self] in self?.prompter.forwardSentence() }
         hotKeys.register(kVK_ANSI_R) { [weak self] in self?.prompter.restart() }
+        hotKeys.register(kVK_ANSI_T) { [weak self] in self?.prompter.toggleSeeThrough() }
 
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             guard let self, e.window === self.prompter.panel else { return e }
