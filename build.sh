@@ -5,7 +5,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 APP=Teleprompter.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/"  # regenerate with: swift Tools/make-icon.swift
 swiftc -swift-version 5 -target arm64-apple-macos26.0 -O Sources/*.swift -o "$APP/Contents/MacOS/Teleprompter"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -15,6 +16,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key><string>Teleprompter</string>
     <key>CFBundleIdentifier</key><string>local.teleprompter</string>
     <key>CFBundleExecutable</key><string>Teleprompter</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
